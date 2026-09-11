@@ -36,6 +36,18 @@ export interface Booking {
   createdAt: string;
 }
 
+export interface CreateBookingInput {
+  propertyId: string;
+  guestName: string;
+  guestEmail: string;
+  guestPhone: string;
+  checkIn: string;
+  checkOut: string;
+}
+
+export type CreateBookingField = keyof CreateBookingInput;
+export type CreateBookingFieldErrors = Partial<Record<CreateBookingField, string>>;
+
 export interface MaintenanceRequest {
   id: string;
   propertyId: string;
@@ -53,6 +65,22 @@ export interface PropertyListItem extends Property {
 export interface BookingListItem extends Booking {
   property: Property;
   guest: Guest;
+}
+
+export interface CreateBookingResult {
+  booking: BookingListItem;
+}
+
+export interface CreateBookingResponse {
+  data: CreateBookingResult;
+}
+
+export interface CreateBookingErrorResponse {
+  error: {
+    code: string;
+    message: string;
+    fieldErrors?: CreateBookingFieldErrors;
+  };
 }
 
 export interface MaintenanceListItem extends MaintenanceRequest {

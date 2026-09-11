@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
+import { CreateBookingDialog } from "@/components/create-booking-dialog";
 import { FilterBar } from "@/components/filter-bar";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { formatDate } from "@/lib/format";
-import { getBookings } from "@/lib/services/operations";
+import { getBookings, getProperties } from "@/lib/services/operations";
 import { BOOKING_STATUSES, type BookingStatus } from "@/lib/types";
 
 export const metadata: Metadata = { title: "Bookings" };
@@ -19,21 +20,14 @@ export default async function BookingsPage({
   const status = BOOKING_STATUSES.includes(requestedStatus as BookingStatus)
     ? (requestedStatus as BookingStatus)
     : undefined;
-  const bookings = await getBookings(status);
+  const [bookings, properties] = await Promise.all([
+    getBookings(status),
+    getProperties(),
+  ]);
   const createAction = (
-    <div>
-      <button
-        className="button button-primary"
-        type="button"
-        disabled
-        aria-describedby="create-booking-hint"
-      >
-        Create booking
-      </button>
-      <span id="create-booking-hint" className="button-hint">
-        Workflow not yet implemented
-      </span>
-    </div>
+    <CreateBookingDialog
+      properties={properties.map(({ id, name, city }) => ({ id, name, city }))}
+    />
   );
   return (
     <>

@@ -1,11 +1,14 @@
 import "server-only";
 
+import { randomUUID } from "node:crypto";
 import { bookings as fixtureBookings, guests as fixtureGuests, maintenanceRequests as fixtureMaintenance, properties as fixtureProperties } from "@/lib/data/seed";
 import { getDatabase, hasDatabase } from "@/lib/data/database";
 import type {
   Booking,
   BookingListItem,
   BookingStatus,
+  CreateBookingFieldErrors,
+  CreateBookingResult,
   DashboardData,
   Guest,
   MaintenanceListItem,
@@ -17,9 +20,27 @@ import type {
   PropertyListItem,
   PropertyStatus,
 } from "@/lib/types";
+import { bookingDatesOverlap, validateCreateBookingInput } from "@/lib/validation/booking";
 
 interface PropertyFilters { city?: string; status?: PropertyStatus }
 interface MaintenanceFilters { status?: MaintenanceStatus; priority?: MaintenancePriority }
+
+export type CreateBookingErrorCode =
+  | "VALIDATION_ERROR"
+  | "PROPERTY_NOT_FOUND"
+  | "BOOKING_CONFLICT"
+  | "PERSISTENCE_UNAVAILABLE";
+
+export class CreateBookingError extends Error {
+  constructor(
+    public readonly code: CreateBookingErrorCode,
+    message: string,
+    public readonly fieldErrors?: CreateBookingFieldErrors,
+  ) {
+    super(message);
+    this.name = "CreateBookingError";
+  }
+}
 
 function mapProperty(row: Record<string, unknown>): Property {
   return { id: String(row.id), name: String(row.name), city: String(row.city), address: String(row.address), monthlyRent: Number(row.monthly_rent), status: row.status as PropertyStatus, createdAt: new Date(String(row.created_at)).toISOString() };
@@ -29,8 +50,14 @@ function mapGuest(row: Record<string, unknown>): Guest {
   return { id: String(row.id), name: String(row.name), email: String(row.email), phone: String(row.phone), createdAt: new Date(String(row.created_at)).toISOString() };
 }
 
+function mapBookingDate(value: unknown): string {
+  return value instanceof Date
+    ? value.toISOString().slice(0, 10)
+    : String(value).slice(0, 10);
+}
+
 function mapBooking(row: Record<string, unknown>): Booking {
-  return { id: String(row.id), propertyId: String(row.property_id), guestId: String(row.guest_id), checkIn: String(row.check_in).slice(0, 10), checkOut: String(row.check_out).slice(0, 10), status: row.status as BookingStatus, createdAt: new Date(String(row.created_at)).toISOString() };
+  return { id: String(row.id), propertyId: String(row.property_id), guestId: String(row.guest_id), checkIn: mapBookingDate(row.check_in), checkOut: mapBookingDate(row.check_out), status: row.status as BookingStatus, createdAt: new Date(String(row.created_at)).toISOString() };
 }
 
 function mapMaintenance(row: Record<string, unknown>): MaintenanceRequest {
@@ -101,6 +128,107 @@ export async function getProperty(id: string): Promise<PropertyDetail | null> {
 export async function getBookings(status?: BookingStatus): Promise<BookingListItem[]> {
   const items = joinBookings(await readSource()).sort((a, b) => b.checkIn.localeCompare(a.checkIn));
   return status ? items.filter((item) => item.status === status) : items;
+}
+
+export async function createBooking(input: unknown): Promise<CreateBookingResult> {
+  const validation = validateCreateBookingInput(input);
+  if (!validation.ok) {
+    throw new CreateBookingError(
+      "VALIDATION_ERROR",
+      "Check the highlighted fields and try again.",
+      validation.fieldErrors,
+    );
+  }
+
+  const bookingInput = validation.value;
+  if (!hasDatabase()) {
+    const propertyExists = fixtureProperties.some(
+      (property) => property.id === bookingInput.propertyId,
+    );
+    if (!propertyExists) {
+      throw new CreateBookingError(
+        "PROPERTY_NOT_FOUND",
+        "The selected property no longer exists.",
+        { propertyId: "Select an available property." },
+      );
+    }
+    throw new CreateBookingError(
+      "PERSISTENCE_UNAVAILABLE",
+      "Booking creation requires a configured database. Set DATABASE_URL and try again.",
+    );
+  }
+
+  const sql = getDatabase();
+  return sql.begin(async (transaction) => {
+    const propertyRows = await transaction`
+      select * from properties
+      where id = ${bookingInput.propertyId}
+      for update
+    `;
+    const propertyRow = propertyRows[0];
+    if (!propertyRow) {
+      throw new CreateBookingError(
+        "PROPERTY_NOT_FOUND",
+        "The selected property no longer exists.",
+        { propertyId: "Select an available property." },
+      );
+    }
+
+    const blockingBookings = await transaction`
+      select check_in, check_out from bookings
+      where property_id = ${bookingInput.propertyId}
+        and status in ('confirmed', 'active')
+    `;
+    const hasConflict = blockingBookings.some((booking) =>
+      bookingDatesOverlap(
+        bookingInput.checkIn,
+        bookingInput.checkOut,
+        mapBookingDate(booking.check_in),
+        mapBookingDate(booking.check_out),
+      ),
+    );
+    if (hasConflict) {
+      const dateMessage = "These dates overlap an active or confirmed booking.";
+      throw new CreateBookingError(
+        "BOOKING_CONFLICT",
+        "This property is unavailable for the selected dates.",
+        { checkIn: dateMessage, checkOut: dateMessage },
+      );
+    }
+
+    const guestRows = await transaction`
+      insert into guests (id, name, email, phone)
+      values (
+        ${`guest_${randomUUID()}`},
+        ${bookingInput.guestName},
+        ${bookingInput.guestEmail},
+        ${bookingInput.guestPhone}
+      )
+      returning *
+    `;
+    const guestRow = guestRows[0];
+
+    const bookingRows = await transaction`
+      insert into bookings (id, property_id, guest_id, check_in, check_out, status)
+      values (
+        ${`book_${randomUUID()}`},
+        ${bookingInput.propertyId},
+        ${String(guestRow.id)},
+        ${bookingInput.checkIn}::date,
+        ${bookingInput.checkOut}::date,
+        'confirmed'
+      )
+      returning *
+    `;
+
+    return {
+      booking: {
+        ...mapBooking(bookingRows[0]),
+        property: mapProperty(propertyRow),
+        guest: mapGuest(guestRow),
+      },
+    };
+  });
 }
 
 export async function getMaintenanceRequests(filters: MaintenanceFilters = {}): Promise<MaintenanceListItem[]> {
