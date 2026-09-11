@@ -1,36 +1,82 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Sage Property Operations
 
-## Getting Started
+Sage Property Operations is the starter application for a two-hour technical assessment. It models an internal workspace used by operations teams to monitor properties, guests, bookings, occupancy, and maintenance across London, Paris, Lisbon, and Algiers.
 
-First, run the development server:
+The application is intentionally complete for read workflows. Booking creation is visibly unavailable because implementing that workflow is the candidate task described in [ASSIGNMENT.md](./ASSIGNMENT.md).
+
+## Getting started
+
+Requirements: Node.js 20.9 or later, npm, and optionally PostgreSQL.
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open `http://localhost:3000`. Without environment variables, the app uses deterministic in-process fixtures and is immediately populated.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Useful checks:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run lint
+npm run build
+```
 
-## Learn More
+## Database setup
 
-To learn more about Next.js, take a look at the following resources:
+PostgreSQL support is optional for running the starter but ready for local or hosted environments.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+1. Create a PostgreSQL database.
+2. Apply `database/schema.sql`.
+3. Apply `database/seed.sql`.
+4. Copy `.env.example` to `.env.local` and set `DATABASE_URL`.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+psql "$DATABASE_URL" -f database/schema.sql
+psql "$DATABASE_URL" -f database/seed.sql
+```
 
-## Deploy on Vercel
+The schema contains `properties`, `guests`, `bookings`, and `maintenance_requests`, with foreign keys and read-oriented indexes. The seed includes 12 properties, 10 guests, 20 bookings, and 12 maintenance requests.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+### Environment variables
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | No | PostgreSQL connection string. Omitting it selects the fixture adapter. |
+| `DATABASE_SSL` | No | Set to `disable` for a trusted local database; remote connections require SSL by default. |
+
+## Architecture
+
+- `app/` contains App Router pages, route-level loading/error states, and API route handlers.
+- `components/` contains the responsive application shell and reusable Sage UI primitives.
+- `lib/services/operations.ts` is the typed read boundary shared by pages and API routes.
+- `lib/data/database.ts` owns the lazy PostgreSQL client; `lib/data/seed.ts` provides the zero-setup adapter.
+- `lib/types.ts` defines domain and joined-view types.
+- `lib/http/api-response.ts` standardizes API success and error envelopes.
+- `database/` contains portable PostgreSQL schema and seed scripts.
+- `context/feature-specs/design-system.md` is the product design source of truth.
+
+Server components call the operations service directly rather than making a loopback HTTP request. Public read APIs use the same service, keeping data behavior consistent without duplicating query logic.
+
+## Application routes
+
+| Route | Description |
+| --- | --- |
+| `/` | Portfolio metrics, city occupancy, upcoming arrivals, and maintenance priorities |
+| `/properties` | Filterable property register |
+| `/properties/[id]` | Property occupancy, guest, booking history, and maintenance details |
+| `/bookings` | Status-filtered booking register and the intentionally disabled Create Booking action |
+| `/maintenance` | Status- and priority-filtered maintenance queue |
+
+## Read API
+
+Successful responses use `{ "data": ..., "meta": ... }`; errors use `{ "error": { "code": ..., "message": ... } }`.
+
+| Endpoint | Supported query parameters |
+| --- | --- |
+| `GET /api/properties` | `city`, `status=occupied\|vacant` |
+| `GET /api/properties/[id]` | None |
+| `GET /api/bookings` | `status=confirmed\|active\|completed\|cancelled` |
+| `GET /api/maintenance` | `status=open\|in_progress\|resolved`, `priority=low\|medium\|high\|critical` |
+
+There is deliberately no write endpoint for bookings in this starter repository.

@@ -1,0 +1,141 @@
+import "server-only";
+
+import { bookings as fixtureBookings, guests as fixtureGuests, maintenanceRequests as fixtureMaintenance, properties as fixtureProperties } from "@/lib/data/seed";
+import { getDatabase, hasDatabase } from "@/lib/data/database";
+import type {
+  Booking,
+  BookingListItem,
+  BookingStatus,
+  DashboardData,
+  Guest,
+  MaintenanceListItem,
+  MaintenancePriority,
+  MaintenanceRequest,
+  MaintenanceStatus,
+  Property,
+  PropertyDetail,
+  PropertyListItem,
+  PropertyStatus,
+} from "@/lib/types";
+
+interface PropertyFilters { city?: string; status?: PropertyStatus }
+interface MaintenanceFilters { status?: MaintenanceStatus; priority?: MaintenancePriority }
+
+function mapProperty(row: Record<string, unknown>): Property {
+  return { id: String(row.id), name: String(row.name), city: String(row.city), address: String(row.address), monthlyRent: Number(row.monthly_rent), status: row.status as PropertyStatus, createdAt: new Date(String(row.created_at)).toISOString() };
+}
+
+function mapGuest(row: Record<string, unknown>): Guest {
+  return { id: String(row.id), name: String(row.name), email: String(row.email), phone: String(row.phone), createdAt: new Date(String(row.created_at)).toISOString() };
+}
+
+function mapBooking(row: Record<string, unknown>): Booking {
+  return { id: String(row.id), propertyId: String(row.property_id), guestId: String(row.guest_id), checkIn: String(row.check_in).slice(0, 10), checkOut: String(row.check_out).slice(0, 10), status: row.status as BookingStatus, createdAt: new Date(String(row.created_at)).toISOString() };
+}
+
+function mapMaintenance(row: Record<string, unknown>): MaintenanceRequest {
+  return { id: String(row.id), propertyId: String(row.property_id), title: String(row.title), description: String(row.description), priority: row.priority as MaintenancePriority, status: row.status as MaintenanceStatus, createdAt: new Date(String(row.created_at)).toISOString() };
+}
+
+async function readSource() {
+  if (!hasDatabase()) {
+    return { properties: fixtureProperties, guests: fixtureGuests, bookings: fixtureBookings, maintenance: fixtureMaintenance };
+  }
+
+  const sql = getDatabase();
+  const [propertyRows, guestRows, bookingRows, maintenanceRows] = await Promise.all([
+    sql`select * from properties order by name`,
+    sql`select * from guests order by name`,
+    sql`select * from bookings order by check_in desc`,
+    sql`select * from maintenance_requests order by created_at desc`,
+  ]);
+
+  return {
+    properties: propertyRows.map((row) => mapProperty(row)),
+    guests: guestRows.map((row) => mapGuest(row)),
+    bookings: bookingRows.map((row) => mapBooking(row)),
+    maintenance: maintenanceRows.map((row) => mapMaintenance(row)),
+  };
+}
+
+function joinBookings(source: Awaited<ReturnType<typeof readSource>>): BookingListItem[] {
+  const propertyById = new Map(source.properties.map((item) => [item.id, item]));
+  const guestById = new Map(source.guests.map((item) => [item.id, item]));
+  return source.bookings.flatMap((booking) => {
+    const property = propertyById.get(booking.propertyId);
+    const guest = guestById.get(booking.guestId);
+    return property && guest ? [{ ...booking, property, guest }] : [];
+  });
+}
+
+function joinMaintenance(source: Awaited<ReturnType<typeof readSource>>): MaintenanceListItem[] {
+  const propertyById = new Map(source.properties.map((item) => [item.id, item]));
+  return source.maintenance.flatMap((request) => {
+    const property = propertyById.get(request.propertyId);
+    return property ? [{ ...request, property }] : [];
+  });
+}
+
+export async function getProperties(filters: PropertyFilters = {}): Promise<PropertyListItem[]> {
+  const source = await readSource();
+  const guestById = new Map(source.guests.map((item) => [item.id, item]));
+  return source.properties
+    .filter((property) => !filters.city || property.city === filters.city)
+    .filter((property) => !filters.status || property.status === filters.status)
+    .map((property) => {
+      const booking = source.bookings.find((item) => item.propertyId === property.id && item.status === "active");
+      const guest = booking ? guestById.get(booking.guestId) : undefined;
+      return { ...property, currentBooking: booking && guest ? { ...booking, guest } : null };
+    });
+}
+
+export async function getProperty(id: string): Promise<PropertyDetail | null> {
+  const source = await readSource();
+  const property = source.properties.find((item) => item.id === id);
+  if (!property) return null;
+  const bookingHistory = joinBookings(source).filter((item) => item.propertyId === id).sort((a, b) => b.checkIn.localeCompare(a.checkIn));
+  const currentBooking = bookingHistory.find((item) => item.status === "active") ?? null;
+  return { ...property, currentBooking, bookingHistory, maintenanceRequests: joinMaintenance(source).filter((item) => item.propertyId === id) };
+}
+
+export async function getBookings(status?: BookingStatus): Promise<BookingListItem[]> {
+  const items = joinBookings(await readSource()).sort((a, b) => b.checkIn.localeCompare(a.checkIn));
+  return status ? items.filter((item) => item.status === status) : items;
+}
+
+export async function getMaintenanceRequests(filters: MaintenanceFilters = {}): Promise<MaintenanceListItem[]> {
+  return joinMaintenance(await readSource())
+    .filter((item) => !filters.status || item.status === filters.status)
+    .filter((item) => !filters.priority || item.priority === filters.priority)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export async function getDashboardData(): Promise<DashboardData> {
+  const [properties, bookings, maintenance] = await Promise.all([getProperties(), getBookings(), getMaintenanceRequests()]);
+  const occupiedProperties = properties.filter((item) => item.status === "occupied").length;
+  const cities = Array.from(new Set(properties.map((item) => item.city)));
+  const occupancyByCity = cities.map((city) => {
+    const cityProperties = properties.filter((item) => item.city === city);
+    const occupied = cityProperties.filter((item) => item.status === "occupied").length;
+    return { city, occupied, total: cityProperties.length, rate: Math.round((occupied / cityProperties.length) * 100) };
+  });
+  const upcomingCheckIns = bookings.filter((item) => item.status === "confirmed").sort((a, b) => a.checkIn.localeCompare(b.checkIn));
+  const outstandingMaintenance = maintenance.filter((item) => item.status !== "resolved").sort((a, b) => {
+    const rank: Record<MaintenancePriority, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+    return rank[b.priority] - rank[a.priority] || b.createdAt.localeCompare(a.createdAt);
+  });
+  return {
+    metrics: {
+      totalProperties: properties.length,
+      occupiedProperties,
+      vacantProperties: properties.length - occupiedProperties,
+      occupancyRate: Math.round((occupiedProperties / properties.length) * 100),
+      activeBookings: bookings.filter((item) => item.status === "active").length,
+      upcomingCheckIns: upcomingCheckIns.length,
+      openMaintenanceRequests: outstandingMaintenance.length,
+    },
+    occupancyByCity,
+    upcomingCheckIns: upcomingCheckIns.slice(0, 4),
+    outstandingMaintenance: outstandingMaintenance.slice(0, 5),
+  };
+}
