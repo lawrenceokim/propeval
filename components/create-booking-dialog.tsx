@@ -1,16 +1,26 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { type FormEvent, type MouseEvent, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type MouseEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { Icon } from "@/components/ui/icon";
 import type {
+  BookingAvailabilityResponse,
   CreateBookingErrorResponse,
   CreateBookingField,
   CreateBookingFieldErrors,
   CreateBookingInput,
   CreateBookingResponse,
 } from "@/lib/types";
-import { validateCreateBookingInput } from "@/lib/validation/booking";
+import {
+  validateBookingAvailabilityInput,
+  validateCreateBookingInput,
+} from "@/lib/validation/booking";
 
 interface PropertyOption {
   id: string;
@@ -36,6 +46,12 @@ const FIELD_LABELS: Record<CreateBookingField, string> = {
   checkOut: "Check-out date",
 };
 
+type AvailabilityState =
+  | { status: "idle"; message: "" }
+  | { status: "checking" | "available" | "unavailable" | "error"; message: string };
+
+const IDLE_AVAILABILITY: AvailabilityState = { status: "idle", message: "" };
+
 export function CreateBookingDialog({
   properties,
 }: {
@@ -46,11 +62,93 @@ export function CreateBookingDialog({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const submissionRef = useRef(false);
+  const availabilityRequestRef = useRef(0);
   const [values, setValues] = useState<CreateBookingInput>(INITIAL_VALUES);
   const [fieldErrors, setFieldErrors] = useState<CreateBookingFieldErrors>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isOpen, setIsOpen] = useState(false);
+  const [availability, setAvailability] =
+    useState<AvailabilityState>(IDLE_AVAILABILITY);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const validation = validateBookingAvailabilityInput({
+      propertyId: values.propertyId,
+      checkIn: values.checkIn,
+      checkOut: values.checkOut,
+    });
+    if (!validation.ok) return;
+
+    const requestId = ++availabilityRequestRef.current;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(async () => {
+      if (requestId !== availabilityRequestRef.current) return;
+      setAvailability({
+        status: "checking",
+        message: "Checking availability…",
+      });
+
+      const searchParams = new URLSearchParams([
+        ["propertyId", validation.value.propertyId],
+        ["checkIn", validation.value.checkIn],
+        ["checkOut", validation.value.checkOut],
+      ]);
+      try {
+        const response = await fetch(
+          `/api/bookings/availability?${searchParams.toString()}`,
+          { cache: "no-store", signal: controller.signal },
+        );
+        const payload = (await response.json()) as
+          | BookingAvailabilityResponse
+          | CreateBookingErrorResponse;
+        if (requestId !== availabilityRequestRef.current) return;
+
+        if (!response.ok || !("data" in payload)) {
+          setAvailability({
+            status: "error",
+            message:
+              "error" in payload
+                ? payload.error.message
+                : "Availability could not be checked. You can still create the booking.",
+          });
+          return;
+        }
+
+        setAvailability(
+          payload.data.available
+            ? {
+                status: "available",
+                message: "Property is available for these dates.",
+              }
+            : {
+                status: "unavailable",
+                message:
+                  "This property already has a booking during the selected dates.",
+              },
+        );
+      } catch {
+        if (
+          controller.signal.aborted ||
+          requestId !== availabilityRequestRef.current
+        ) {
+          return;
+        }
+        setAvailability({
+          status: "error",
+          message:
+            "Availability could not be checked. You can still create the booking.",
+        });
+      }
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [isOpen, values.checkIn, values.checkOut, values.propertyId]);
 
   function focusField(field: CreateBookingField) {
     const control = formRef.current?.elements.namedItem(field);
@@ -60,11 +158,16 @@ export function CreateBookingDialog({
   function openDialog() {
     setSuccessMessage(null);
     setFormError(null);
+    setAvailability(IDLE_AVAILABILITY);
+    setIsOpen(true);
     dialogRef.current?.showModal();
   }
 
   function closeDialog() {
     if (submissionRef.current) return;
+    availabilityRequestRef.current += 1;
+    setAvailability(IDLE_AVAILABILITY);
+    setIsOpen(false);
     dialogRef.current?.close();
     triggerRef.current?.focus();
   }
@@ -72,11 +175,18 @@ export function CreateBookingDialog({
   function updateField(field: CreateBookingField, value: string) {
     setValues((current) => ({ ...current, [field]: value }));
     setFieldErrors((current) => {
-      if (!current[field]) return current;
       const next = { ...current };
       delete next[field];
+      if (field === "propertyId" || field === "checkIn" || field === "checkOut") {
+        delete next.checkIn;
+        delete next.checkOut;
+      }
       return next;
     });
+    if (field === "propertyId" || field === "checkIn" || field === "checkOut") {
+      availabilityRequestRef.current += 1;
+      setAvailability(IDLE_AVAILABILITY);
+    }
     setFormError(null);
   }
 
@@ -118,6 +228,14 @@ export function CreateBookingDialog({
         if ("error" in payload) {
           setFieldErrors(payload.error.fieldErrors ?? {});
           setFormError(payload.error.message);
+          if (payload.error.code === "BOOKING_CONFLICT") {
+            availabilityRequestRef.current += 1;
+            setAvailability({
+              status: "unavailable",
+              message:
+                "This property already has a booking during the selected dates.",
+            });
+          }
           const firstInvalidField = Object.keys(
             payload.error.fieldErrors ?? {},
           )[0] as CreateBookingField | undefined;
@@ -131,6 +249,9 @@ export function CreateBookingDialog({
       const guestName = validation.value.guestName;
       setValues(INITIAL_VALUES);
       setFieldErrors({});
+      availabilityRequestRef.current += 1;
+      setAvailability(IDLE_AVAILABILITY);
+      setIsOpen(false);
       dialogRef.current?.close();
       triggerRef.current?.focus();
       setSuccessMessage(`Booking for ${guestName} created successfully.`);
@@ -177,6 +298,7 @@ export function CreateBookingDialog({
         ref={dialogRef}
         aria-labelledby="create-booking-title"
         aria-describedby="create-booking-description"
+        aria-modal="true"
         onCancel={(event) => {
           event.preventDefault();
           closeDialog();
@@ -324,6 +446,20 @@ export function CreateBookingDialog({
               />
               {fieldError("checkOut")}
             </label>
+
+            <div
+              className={`booking-availability booking-availability-${availability.status}`}
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              {availability.status !== "idle" ? (
+                <>
+                  <Icon name="info" size={18} />
+                  <span>{availability.message}</span>
+                </>
+              ) : null}
+            </div>
           </div>
 
           <div className="booking-dialog-actions">

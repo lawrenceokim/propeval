@@ -5,6 +5,7 @@ import { bookings as fixtureBookings, guests as fixtureGuests, maintenanceReques
 import { getDatabase, hasDatabase } from "@/lib/data/database";
 import type {
   Booking,
+  BookingAvailabilityResult,
   BookingListItem,
   BookingStatus,
   CreateBookingFieldErrors,
@@ -20,7 +21,7 @@ import type {
   PropertyListItem,
   PropertyStatus,
 } from "@/lib/types";
-import { bookingDatesOverlap, validateCreateBookingInput } from "@/lib/validation/booking";
+import { hasBookingConflict, validateBookingAvailabilityInput, validateCreateBookingInput } from "@/lib/validation/booking";
 
 interface PropertyFilters { city?: string; status?: PropertyStatus }
 interface MaintenanceFilters { status?: MaintenanceStatus; priority?: MaintenancePriority }
@@ -130,6 +131,59 @@ export async function getBookings(status?: BookingStatus): Promise<BookingListIt
   return status ? items.filter((item) => item.status === status) : items;
 }
 
+function unavailablePropertyError(): CreateBookingError {
+  return new CreateBookingError(
+    "PROPERTY_NOT_FOUND",
+    "The selected property no longer exists.",
+    { propertyId: "Select an available property." },
+  );
+}
+
+export async function getBookingAvailability(
+  input: unknown,
+): Promise<BookingAvailabilityResult> {
+  const validation = validateBookingAvailabilityInput(input);
+  if (!validation.ok) {
+    throw new CreateBookingError(
+      "VALIDATION_ERROR",
+      "Select a property and a valid date range.",
+      validation.fieldErrors,
+    );
+  }
+
+  const availabilityInput = validation.value;
+  if (!hasDatabase()) {
+    if (!fixtureProperties.some(({ id }) => id === availabilityInput.propertyId)) {
+      throw unavailablePropertyError();
+    }
+    const propertyBookings = fixtureBookings.filter(
+      ({ propertyId }) => propertyId === availabilityInput.propertyId,
+    );
+    return {
+      available: !hasBookingConflict(propertyBookings, availabilityInput),
+    };
+  }
+
+  const sql = getDatabase();
+  const propertyRows = await sql`
+    select id from properties where id = ${availabilityInput.propertyId}
+  `;
+  if (!propertyRows[0]) throw unavailablePropertyError();
+
+  const bookingRows = await sql`
+    select check_in, check_out, status from bookings
+    where property_id = ${availabilityInput.propertyId}
+  `;
+  const propertyBookings = bookingRows.map((booking) => ({
+    checkIn: mapBookingDate(booking.check_in),
+    checkOut: mapBookingDate(booking.check_out),
+    status: booking.status as BookingStatus,
+  }));
+  return {
+    available: !hasBookingConflict(propertyBookings, availabilityInput),
+  };
+}
+
 export async function createBooking(input: unknown): Promise<CreateBookingResult> {
   const validation = validateCreateBookingInput(input);
   if (!validation.ok) {
@@ -167,26 +221,19 @@ export async function createBooking(input: unknown): Promise<CreateBookingResult
     `;
     const propertyRow = propertyRows[0];
     if (!propertyRow) {
-      throw new CreateBookingError(
-        "PROPERTY_NOT_FOUND",
-        "The selected property no longer exists.",
-        { propertyId: "Select an available property." },
-      );
+      throw unavailablePropertyError();
     }
 
     const blockingBookings = await transaction`
-      select check_in, check_out from bookings
+      select check_in, check_out, status from bookings
       where property_id = ${bookingInput.propertyId}
-        and status in ('confirmed', 'active')
     `;
-    const hasConflict = blockingBookings.some((booking) =>
-      bookingDatesOverlap(
-        bookingInput.checkIn,
-        bookingInput.checkOut,
-        mapBookingDate(booking.check_in),
-        mapBookingDate(booking.check_out),
-      ),
-    );
+    const propertyBookings = blockingBookings.map((booking) => ({
+      checkIn: mapBookingDate(booking.check_in),
+      checkOut: mapBookingDate(booking.check_out),
+      status: booking.status as BookingStatus,
+    }));
+    const hasConflict = hasBookingConflict(propertyBookings, bookingInput);
     if (hasConflict) {
       const dateMessage = "These dates overlap an active or confirmed booking.";
       throw new CreateBookingError(

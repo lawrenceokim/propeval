@@ -1,7 +1,11 @@
 import type {
+  Booking,
+  BookingAvailabilityFieldErrors,
+  BookingAvailabilityInput,
   CreateBookingFieldErrors,
   CreateBookingInput,
 } from "@/lib/types";
+import { BLOCKING_BOOKING_STATUSES } from "@/lib/types";
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -9,6 +13,10 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 type CreateBookingValidationResult =
   | { ok: true; value: CreateBookingInput }
   | { ok: false; fieldErrors: CreateBookingFieldErrors };
+
+type BookingAvailabilityValidationResult =
+  | { ok: true; value: BookingAvailabilityInput }
+  | { ok: false; fieldErrors: BookingAvailabilityFieldErrors };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -38,28 +46,30 @@ export function bookingDatesOverlap(
   return newCheckIn < existingCheckOut && newCheckOut > existingCheckIn;
 }
 
-export function validateCreateBookingInput(
-  input: unknown,
-): CreateBookingValidationResult {
-  const source = isRecord(input) ? input : {};
-  const value: CreateBookingInput = {
-    propertyId: readTrimmedString(source, "propertyId"),
-    guestName: readTrimmedString(source, "guestName"),
-    guestEmail: readTrimmedString(source, "guestEmail"),
-    guestPhone: readTrimmedString(source, "guestPhone"),
-    checkIn: readTrimmedString(source, "checkIn"),
-    checkOut: readTrimmedString(source, "checkOut"),
-  };
-  const fieldErrors: CreateBookingFieldErrors = {};
+export function hasBookingConflict(
+  existingBookings: ReadonlyArray<
+    Pick<Booking, "checkIn" | "checkOut" | "status">
+  >,
+  requested: Pick<BookingAvailabilityInput, "checkIn" | "checkOut">,
+): boolean {
+  return existingBookings.some(
+    (booking) =>
+      BLOCKING_BOOKING_STATUSES.includes(booking.status) &&
+      bookingDatesOverlap(
+        requested.checkIn,
+        requested.checkOut,
+        booking.checkIn,
+        booking.checkOut,
+      ),
+  );
+}
+
+function validateBookingAvailabilityValue(
+  value: BookingAvailabilityInput,
+): BookingAvailabilityFieldErrors {
+  const fieldErrors: BookingAvailabilityFieldErrors = {};
 
   if (!value.propertyId) fieldErrors.propertyId = "Select a property.";
-  if (!value.guestName) fieldErrors.guestName = "Enter the guest's name.";
-  if (!value.guestEmail) {
-    fieldErrors.guestEmail = "Enter the guest's email address.";
-  } else if (!EMAIL_PATTERN.test(value.guestEmail)) {
-    fieldErrors.guestEmail = "Enter a valid email address.";
-  }
-  if (!value.guestPhone) fieldErrors.guestPhone = "Enter the guest's phone number.";
   if (!value.checkIn) {
     fieldErrors.checkIn = "Select a check-in date.";
   } else if (!isValidBookingDate(value.checkIn)) {
@@ -78,6 +88,47 @@ export function validateCreateBookingInput(
     fieldErrors.checkOut = "Check-out must be after check-in.";
   }
 
+  return fieldErrors;
+}
+
+export function validateBookingAvailabilityInput(
+  input: unknown,
+): BookingAvailabilityValidationResult {
+  const source = isRecord(input) ? input : {};
+  const value: BookingAvailabilityInput = {
+    propertyId: readTrimmedString(source, "propertyId"),
+    checkIn: readTrimmedString(source, "checkIn"),
+    checkOut: readTrimmedString(source, "checkOut"),
+  };
+  const fieldErrors = validateBookingAvailabilityValue(value);
+
+  return Object.keys(fieldErrors).length > 0
+    ? { ok: false, fieldErrors }
+    : { ok: true, value };
+}
+
+export function validateCreateBookingInput(
+  input: unknown,
+): CreateBookingValidationResult {
+  const source = isRecord(input) ? input : {};
+  const value: CreateBookingInput = {
+    propertyId: readTrimmedString(source, "propertyId"),
+    guestName: readTrimmedString(source, "guestName"),
+    guestEmail: readTrimmedString(source, "guestEmail"),
+    guestPhone: readTrimmedString(source, "guestPhone"),
+    checkIn: readTrimmedString(source, "checkIn"),
+    checkOut: readTrimmedString(source, "checkOut"),
+  };
+  const fieldErrors: CreateBookingFieldErrors =
+    validateBookingAvailabilityValue(value);
+
+  if (!value.guestName) fieldErrors.guestName = "Enter the guest's name.";
+  if (!value.guestEmail) {
+    fieldErrors.guestEmail = "Enter the guest's email address.";
+  } else if (!EMAIL_PATTERN.test(value.guestEmail)) {
+    fieldErrors.guestEmail = "Enter a valid email address.";
+  }
+  if (!value.guestPhone) fieldErrors.guestPhone = "Enter the guest's phone number.";
   return Object.keys(fieldErrors).length > 0
     ? { ok: false, fieldErrors }
     : { ok: true, value };

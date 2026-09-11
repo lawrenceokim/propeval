@@ -1,5 +1,6 @@
 export const PROPERTY_STATUSES = ["occupied", "vacant"] as const;
 export const BOOKING_STATUSES = ["confirmed", "active", "completed", "cancelled"] as const;
+export const BLOCKING_BOOKING_STATUSES: readonly BookingStatus[] = ["confirmed", "active"];
 export const MAINTENANCE_PRIORITIES = ["low", "medium", "high", "critical"] as const;
 export const MAINTENANCE_STATUSES = ["open", "in_progress", "resolved"] as const;
 
@@ -43,6 +44,24 @@ export interface CreateBookingInput {
   guestPhone: string;
   checkIn: string;
   checkOut: string;
+}
+
+export interface BookingAvailabilityInput {
+  propertyId: string;
+  checkIn: string;
+  checkOut: string;
+}
+
+export type BookingAvailabilityFieldErrors = Partial<
+  Record<keyof BookingAvailabilityInput, string>
+>;
+
+export interface BookingAvailabilityResult {
+  available: boolean;
+}
+
+export interface BookingAvailabilityResponse {
+  data: BookingAvailabilityResult;
 }
 
 export type CreateBookingField = keyof CreateBookingInput;
