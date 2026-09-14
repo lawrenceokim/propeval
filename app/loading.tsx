@@ -1,2 +1,5 @@
-import { LoadingPage } from "@/components/loading-page";
-export default LoadingPage;
+import { DashboardContent } from "@/components/dashboard-content";
+
+export default function Loading() {
+  return <DashboardContent />;
+}

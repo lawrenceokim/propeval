@@ -1,2 +1,5 @@
-import { LoadingPage } from "@/components/loading-page";
-export default LoadingPage;
+import { MaintenanceContent } from "@/components/maintenance-content";
+
+export default function Loading() {
+  return <MaintenanceContent />;
+}

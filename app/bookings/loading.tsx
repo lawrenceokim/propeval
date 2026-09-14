@@ -1,2 +1,5 @@
-import { LoadingPage } from "@/components/loading-page";
-export default LoadingPage;
+import { BookingsContent } from "@/components/bookings-content";
+
+export default function Loading() {
+  return <BookingsContent />;
+}

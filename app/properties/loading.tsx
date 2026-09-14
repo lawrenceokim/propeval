@@ -1,2 +1,5 @@
-import { LoadingPage } from "@/components/loading-page";
-export default LoadingPage;
+import { PropertiesContent } from "@/components/properties-content";
+
+export default function Loading() {
+  return <PropertiesContent />;
+}
